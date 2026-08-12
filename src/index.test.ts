@@ -266,6 +266,74 @@ describe('Sentinel API Authentication & Persistence', () => {
       expect(res.status).toBe(401);
       expect(res.body.error).toContain('Unauthorized');
     });
+
+    it('returns 401 on /api/me when Authorization header is missing', async () => {
+      const res = await request(app).get('/api/me');
+      expect(res.status).toBe(401);
+      expect(res.body.error).toContain('Unauthorized');
+    });
+  });
+
+  describe('/api/me & Subscription Tiers', () => {
+    it('auto-provisions user with free subscription tier for regular users', async () => {
+      const token = makeToken('usr_regular_1', 'user@example.com');
+      const res = await request(app)
+        .get('/api/me')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.user).toBeDefined();
+      expect(res.body.user.email).toBe('user@example.com');
+      expect(res.body.user.subscriptionTier).toBe('free');
+      expect(res.body.user.subscriptionStatus).toBe('trialing');
+    });
+
+    it('auto-provisions user with pro subscription tier for omniveo.io whitelist emails', async () => {
+      const token = makeToken('usr_omniveo_1', 'alice@omniveo.io');
+      const res = await request(app)
+        .get('/api/me')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.user).toBeDefined();
+      expect(res.body.user.email).toBe('alice@omniveo.io');
+      expect(res.body.user.subscriptionTier).toBe('pro');
+      expect(res.body.user.subscriptionStatus).toBe('active');
+    });
+
+    it('upgrades existing non-pro user to pro when accessing /api/me with omniveo.io email', async () => {
+      const token = makeToken('usr_omniveo_2', 'bob@omniveo.io');
+      // Create user first as free
+      await request(app).post('/api/auth/login').send({ email: 'bob@example.com' });
+
+      const res = await request(app)
+        .get('/api/me')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.user.subscriptionTier).toBe('pro');
+      expect(res.body.user.subscriptionStatus).toBe('active');
+    });
+
+    it('provisions free tier on login for standard emails', async () => {
+      const res = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'newuser@example.com' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.user.subscriptionTier).toBe('free');
+    });
+
+    it('rejects free tier checkout request on /api/checkout', async () => {
+      const token = makeToken('usr_checkout_test');
+      const res = await request(app)
+        .post('/api/checkout')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ tier: 'free' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid tier');
+    });
   });
 
   describe('Companies Endpoint & User Isolation', () => {

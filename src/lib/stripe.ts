@@ -12,23 +12,17 @@ export function getStripe(): Stripe {
 }
 
 export const PLANS = {
+  free: {
+    name: 'STRATEMARK Free',
+    price: 0,
+    interval: 'month' as const,
+    companies: 3,
+  },
   pro: {
     name: 'STRATEMARK Pro',
     price: 2900,
     interval: 'month' as const,
     companies: 10,
-  },
-  team: {
-    name: 'STRATEMARK Team',
-    price: 7900,
-    interval: 'month' as const,
-    companies: 25,
-  },
-  enterprise: {
-    name: 'STRATEMARK Enterprise',
-    price: 19900,
-    interval: 'month' as const,
-    companies: 100,
   },
 } as const;
 

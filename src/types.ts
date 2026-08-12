@@ -36,7 +36,7 @@ export interface TrackedCompany {
 export interface User {
   id: string;
   email: string;
-  subscriptionTier: 'pro' | 'team' | 'enterprise';
+  subscriptionTier: 'free' | 'pro';
   subscriptionStatus: 'active' | 'trialing' | 'canceled';
   stripeCustomerId: string | null;
   timezone?: string;

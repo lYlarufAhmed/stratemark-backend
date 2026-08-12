@@ -72,11 +72,12 @@ app.post('/api/auth/login', async (req, res) => {
   const snap = await collections.users.where('email', '==', email).get();
   if (snap.empty) {
     const userId = `user-${Date.now()}`;
+    const isOmniveoPro = email ? email.endsWith('@omniveo.io') : false;
     const user: User = {
       id: userId,
       email,
-      subscriptionTier: 'pro',
-      subscriptionStatus: 'trialing',
+      subscriptionTier: isOmniveoPro ? 'pro' : 'free',
+      subscriptionStatus: isOmniveoPro ? 'active' : 'trialing',
       stripeCustomerId: null,
       createdAt: new Date().toISOString(),
     };
@@ -85,26 +86,57 @@ app.post('/api/auth/login', async (req, res) => {
   }
   res.json({ user: snap.docs[0].data() });
 });
+// -- Auth: return current user
+app.get('/api/me', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const email = req.user?.email || null;
+
+  let user = await getUser(userId);
+
+  // Auto-provision user record if not exists
+  if (!user) {
+    const isOmniveoPro = email ? email.endsWith('@omniveo.io') : false;
+    const newUser: User = {
+      id: userId,
+      email: email || `${userId}@user.stratemark.ai`,
+      subscriptionTier: isOmniveoPro ? 'pro' : 'free',
+      subscriptionStatus: isOmniveoPro ? 'active' : 'trialing',
+      stripeCustomerId: null,
+      createdAt: new Date().toISOString(),
+    };
+    await createUser(newUser);
+    user = newUser;
+  } else if (email && email.endsWith('@omniveo.io') && user.subscriptionTier !== 'pro') {
+    // Whitelist upgrade for team accounts
+    user.subscriptionTier = 'pro';
+    user.subscriptionStatus = 'active';
+    await createUser(user);
+  }
+
+  res.json({ user });
+});
 
 // ── Stripe Checkout ─────────────────────────────────────────────────────────
 app.post('/api/checkout', authenticateToken, async (req: AuthRequest, res) => {
   const userId = req.userId!;
   const { tier } = req.body ?? {};
   if (!tier) return res.status(400).json({ error: 'tier required' });
-  if (!PLANS[tier as PlanTier]) return res.status(400).json({ error: 'invalid tier' });
+  if (tier === 'free' || !PLANS[tier as PlanTier]) return res.status(400).json({ error: 'invalid tier' });
 
   let user = await getUser(userId);
   if (!user) {
     const userEmail = req.user?.email || `${userId}@user.stratemark.ai`;
-    user = {
+    const isOmniveoPro = userEmail.endsWith('@omniveo.io');
+    const newUser: User = {
       id: userId,
       email: userEmail,
-      subscriptionTier: 'pro',
-      subscriptionStatus: 'trialing',
+      subscriptionTier: isOmniveoPro ? 'pro' : 'free',
+      subscriptionStatus: isOmniveoPro ? 'active' : 'trialing',
       stripeCustomerId: null,
       createdAt: new Date().toISOString(),
     };
-    await createUser(user);
+    await createUser(newUser);
+    user = newUser;
   }
 
   const url = await createCheckoutSession(tier as PlanTier, user.email, userId);
@@ -368,7 +400,7 @@ app.post('/api/webhook/paddle', express.json(), async (req, res) => {
           typeof payload.passthrough === 'string'
             ? JSON.parse(payload.passthrough)
             : payload.passthrough;
-      } catch {}
+      } catch { }
     } else if (payload.data?.custom_data) {
       customData = payload.data.custom_data;
     }
