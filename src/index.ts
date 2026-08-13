@@ -379,7 +379,11 @@ app.get('/api/decks', authenticateToken, async (req: AuthRequest, res) => {
 app.get('/api/decks/:deckId', authenticateToken, async (req: AuthRequest, res) => {
   const userId = req.userId!;
   const { deckId } = req.params;
-  const deck = await getUserDeck(userId, deckId);
+  let deck = await getUserDeck(userId, deckId);
+  if (!deck) {
+    const allDecks = await getUserDecks(userId);
+    deck = allDecks.find((d) => d.id === deckId || d.marketId === deckId) ?? null;
+  }
   if (!deck) return res.status(404).json({ error: 'deck not found' });
 
   const [market, allCards, allCompanies, allMetrics, allViceClaims] = await Promise.all([
@@ -390,7 +394,7 @@ app.get('/api/decks/:deckId', authenticateToken, async (req: AuthRequest, res) =
     getUserViceClaims(userId),
   ]);
 
-  const cards = allCards.filter((c) => c.deckId === deckId);
+  const cards = allCards.filter((c) => c.deckId === deck.id);
   const companyIds = new Set(cards.map((c) => c.companyId).filter((id): id is string => Boolean(id)));
   const companies = allCompanies.filter((c) => companyIds.has(c.id));
   const metrics = allMetrics.filter((m) => companyIds.has(m.companyId));
