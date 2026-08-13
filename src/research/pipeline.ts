@@ -433,44 +433,56 @@ export async function discoverWithCoverage(
     { role: 'vice', needed: coverage.vice.min, target: coverage.vice.target },
     { role: 'culture', needed: coverage.culture.min, target: coverage.culture.target },
   ];
-  for (const pass of fallbackPasses) {
+  const neededPasses = fallbackPasses.filter((pass) => {
     const current =
       pass.role === 'vice' || pass.role === 'culture'
         ? countSignal(pass.role)
         : countRole(pass.role as 'company' | 'infrastructure' | 'distribution');
-    if (current >= pass.needed) continue;
-    const fallback = await discover(
-      client,
-      plan,
-      Math.min(pass.target, pass.needed - current + 2),
-      signal,
-      pass.role,
-      candidates.map((c) => c.name),
+    return current < pass.needed;
+  });
+
+  if (neededPasses.length > 0) {
+    const fallbackResults = await Promise.all(
+      neededPasses.map((pass) => {
+        const current =
+          pass.role === 'vice' || pass.role === 'culture'
+            ? countSignal(pass.role)
+            : countRole(pass.role as 'company' | 'infrastructure' | 'distribution');
+        return discover(
+          client,
+          plan,
+          Math.min(pass.target, pass.needed - current + 2),
+          signal,
+          pass.role,
+          candidates.map((c) => c.name),
+        );
+      }),
     );
-    candidates = mergeCandidates(candidates, fallback.candidates);
-    rejected.push(...fallback.rejected);
+    for (const fallback of fallbackResults) {
+      candidates = mergeCandidates(candidates, fallback.candidates);
+      rejected.push(...fallback.rejected);
+    }
   }
 
-  // Catalog expansion searches each market angle independently. Stop when the
-  // market has stopped yielding new identities twice in a row or the safety cap
-  // is reached; this makes the census broad without turning one deck into an
-  // unbounded free-tier job.
-  let noGrowth = 0;
-  for (const angle of plan.searchThemes.slice(0, catalogPasses)) {
-    if (candidates.length >= catalogMax || noGrowth >= 2) break;
-    const before = candidates.length;
-    const pass = await discover(
-      client,
-      plan,
-      Math.min(8, catalogMax - candidates.length),
-      signal,
-      'all',
-      candidates.map((candidate) => candidate.name),
-      angle,
-    );
-    candidates = mergeCandidates(candidates, pass.candidates);
-    rejected.push(...pass.rejected);
-    noGrowth = candidates.length === before ? noGrowth + 1 : 0;
+  // Catalog expansion searches each market angle independently only if candidates are under minimum
+  if (candidates.length < coverage.companies.min) {
+    let noGrowth = 0;
+    for (const angle of plan.searchThemes.slice(0, catalogPasses)) {
+      if (candidates.length >= catalogMax || noGrowth >= 2) break;
+      const before = candidates.length;
+      const pass = await discover(
+        client,
+        plan,
+        Math.min(8, catalogMax - candidates.length),
+        signal,
+        'all',
+        candidates.map((candidate) => candidate.name),
+        angle,
+      );
+      candidates = mergeCandidates(candidates, pass.candidates);
+      rejected.push(...pass.rejected);
+      noGrowth = candidates.length === before ? noGrowth + 1 : 0;
+    }
   }
 
   const selected = selectCandidates(candidates, coverage, catalogMax);

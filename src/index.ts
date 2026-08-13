@@ -318,7 +318,10 @@ app.post('/api/research/deck', authenticateToken, async (req: AuthRequest, res) 
   }
 
   try {
-    const client = createGeminiClient({ apiKey });
+    const client = createGeminiClient({
+      apiKey,
+      model: config.gemini.model,
+    });
     const options = {
       apiKey,
       ...(targetCompanies ? { targetCompanies: Number(targetCompanies) } : {}),
