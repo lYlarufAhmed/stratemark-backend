@@ -1,5 +1,11 @@
 import dotenv from 'dotenv';
-dotenv.config();
+import path from 'node:path';
+
+// Load local variables when running from source. Cloud Run supplies variables
+// through its environment, so this is intentionally a no-op there.
+dotenv.config({
+  path: process.env.DOTENV_CONFIG_PATH ?? path.resolve(process.cwd(), '.env'),
+});
 
 export const config = {
   gcp: {
