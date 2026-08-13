@@ -1,5 +1,4 @@
-import dotenv from 'dotenv';
-dotenv.config();
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import {
@@ -320,7 +319,7 @@ app.post('/api/research/deck', authenticateToken, async (req: AuthRequest, res) 
   const { prompt, region = null, targetCompanies } = req.body ?? {};
   if (!prompt) return res.status(400).json({ error: 'prompt is required' });
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = config.gemini.apiKey;
   if (!apiKey) {
     return res.status(500).json({ error: 'GEMINI_API_KEY environment variable is not configured' });
   }
