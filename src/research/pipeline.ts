@@ -162,16 +162,42 @@ async function interpret(
   };
 }
 
-function identityKeys(name: string, domain: string | null): string[] {
-  const nameKey = name
+function normalizeCompanyName(name: string): string {
+  return name
     .toLowerCase()
     .replace(
-      /\b(incorporated|corporation|company|limited|holdings|group|inc|llc|ltd|corp|plc|ag)\b/g,
+      /\b(incorporated|corporation|company|limited|holdings|group|technologies|technology|software|systems|labs|lab|inc|llc|ltd|corp|plc|ag|co|io|ai)\b/g,
       '',
     )
     .replace(/[^a-z0-9]/g, '');
-  const domainKey = domain ? rootDomain(domain) : null;
-  return [nameKey, ...(domainKey ? [domainKey] : [])];
+}
+
+export function identityKeys(name: string, domain: string | null): string[] {
+  const keys: string[] = [];
+  const nameKey = normalizeCompanyName(name);
+  if (nameKey) {
+    keys.push(`name:${nameKey}`);
+  }
+  if (domain) {
+    const root = rootDomain(domain);
+    if (root && root !== 'example.com' && !root.startsWith('fallback')) {
+      keys.push(`domain:${root}`);
+    }
+  }
+  return keys;
+}
+
+export function isSameCompany(
+  a: { name: string; domain?: string | null; websiteUrl?: string | null },
+  b: { name: string; domain?: string | null; websiteUrl?: string | null },
+): boolean {
+  const domainA = a.domain ?? (a.websiteUrl ? rootDomain(a.websiteUrl) : null);
+  const domainB = b.domain ?? (b.websiteUrl ? rootDomain(b.websiteUrl) : null);
+
+  const keysA = identityKeys(a.name, domainA);
+  const keysB = identityKeys(b.name, domainB);
+
+  return keysA.some((k) => keysB.includes(k));
 }
 
 function primaryEntityType(
@@ -346,43 +372,57 @@ export function selectCandidates(
     ]),
   );
   const selected: CompanyCandidate[] = [];
-  for (const role of roles)
-    selected.push(...(groups.get(role) ?? []).slice(0, roleCoverage[role].min));
+  const selectedKeys = new Set<string>();
+
+  const addCandidate = (c: CompanyCandidate): boolean => {
+    const keys = identityKeys(c.name, c.domain);
+    if (keys.some((k) => selectedKeys.has(k))) return false;
+    keys.forEach((k) => selectedKeys.add(k));
+    selected.push(c);
+    return true;
+  };
+
+  // 1. Minimum quota per role
   for (const role of roles) {
-    const current = groups.get(role) ?? [];
-    const already = new Set(selected.map((c) => identityKeys(c.name, c.domain)[0]));
-    for (const candidate of current.slice(roleCoverage[role].min, roleCoverage[role].target)) {
-      if (!already.has(identityKeys(candidate.name, candidate.domain)[0])) {
-        selected.push(candidate);
-        already.add(identityKeys(candidate.name, candidate.domain)[0]);
-      }
+    for (const candidate of groups.get(role) ?? []) {
+      const currentRoleCount = selected.filter(
+        (c) => primaryEntityType(c.cardTypes, c.name, c.descriptor, c.primaryRole) === role,
+      ).length;
+      if (currentRoleCount >= roleCoverage[role].min) break;
+      addCandidate(candidate);
     }
   }
-  // Preserve signal-bearing entities while selecting the entity quotas. Signals
-  // are facets on a company card, so dropping these candidates would make the
-  // vice/culture minimum impossible even when discovery found credible evidence.
+
+  // 2. Target quota per role
+  for (const role of roles) {
+    for (const candidate of groups.get(role) ?? []) {
+      const currentRoleCount = selected.filter(
+        (c) => primaryEntityType(c.cardTypes, c.name, c.descriptor, c.primaryRole) === role,
+      ).length;
+      if (currentRoleCount >= roleCoverage[role].target) break;
+      addCandidate(candidate);
+    }
+  }
+
+  // 3. Preserve signal-bearing entities (vice, culture)
   for (const signalRole of ['vice', 'culture'] as const) {
     let count = selected.filter((c) => c.cardTypes.includes(signalRole)).length;
     if (count >= coverage[signalRole].min) continue;
     for (const candidate of candidates) {
       if (count >= coverage[signalRole].min) break;
       if (!candidate.cardTypes.includes(signalRole)) continue;
-      const key = identityKeys(candidate.name, candidate.domain)[0]!;
-      if (selected.some((c) => identityKeys(c.name, c.domain)[0] === key)) continue;
-      selected.push(candidate);
-      count += 1;
+      if (addCandidate(candidate)) {
+        count += 1;
+      }
     }
   }
-  const selectedKeys = new Set(
-    selected.flatMap((candidate) => identityKeys(candidate.name, candidate.domain)),
-  );
+
+  // 4. Fill up to maxCandidates
   for (const candidate of candidates) {
     if (selected.length >= maxCandidates) break;
-    const keys = identityKeys(candidate.name, candidate.domain);
-    if (keys.some((key) => selectedKeys.has(key))) continue;
-    keys.forEach((key) => selectedKeys.add(key));
-    selected.push(candidate);
+    addCandidate(candidate);
   }
+
   return selected;
 }
 
@@ -1173,16 +1213,21 @@ export function buildCandidateSkeletons(
 ): { cards: Card[]; companies: Company[] } {
   const cards: Card[] = [];
   const companies: Company[] = [];
-  const seenCompanies = new Set<string>();
 
   for (const candidate of candidates) {
     const compSlug = slugify(candidate.name);
-    const companyId = uid('cmp', compSlug);
     const domain = candidate.domain ? rootDomain(candidate.domain) : null;
 
-    if (!seenCompanies.has(companyId)) {
-      seenCompanies.add(companyId);
-      companies.push({
+    let existingCompany = companies.find((c) =>
+      isSameCompany(candidate, { name: c.name, websiteUrl: c.websiteUrl }),
+    );
+
+    let companyId: string;
+    if (existingCompany) {
+      companyId = existingCompany.id;
+    } else {
+      companyId = uid('cmp', compSlug);
+      existingCompany = {
         id: companyId,
         name: candidate.name,
         oneLiner: candidate.descriptor || `${candidate.name} operates in this market.`,
@@ -1198,7 +1243,8 @@ export function buildCandidateSkeletons(
           fontFamily: null,
           source: 'default',
         },
-      });
+      };
+      companies.push(existingCompany);
     }
 
     const primaryType = candidate.cardTypes[0] ?? candidate.primaryRole ?? 'company';

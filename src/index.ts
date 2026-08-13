@@ -453,6 +453,21 @@ app.delete('/api/decks/:deckId', authenticateToken, async (req: AuthRequest, res
   res.json({ success: true, message: 'Deck deleted successfully', deckId });
 });
 
+// ── Market Endpoints ─────────────────────────────────────────────────────────
+app.get('/api/markets', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const markets = await getUserMarkets(userId);
+  res.json({ markets });
+});
+
+app.get('/api/markets/:marketId', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const { marketId } = req.params;
+  const market = await getUserMarket(userId, marketId);
+  if (!market) return res.status(404).json({ error: 'market not found' });
+  res.json({ market });
+});
+
 app.get('/api/cards', authenticateToken, async (req: AuthRequest, res) => {
   const userId = req.userId!;
   const { deckId } = req.query;
