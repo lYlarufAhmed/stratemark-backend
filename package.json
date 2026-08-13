@@ -8,7 +8,9 @@
   },
   "scripts": {
     "dev": "tsx src/index.ts",
+    "dev:emulator": "FIRESTORE_EMULATOR_HOST=127.0.0.1:8085 tsx src/index.ts",
     "dev:cloud-run": "bash scripts/run-cloud-run-local.sh",
+    "emulator:firestore": "gcloud emulators firestore start --host-port=127.0.0.1:8085",
     "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outdir=dist --external:express --external:@google-cloud/firestore --external:firebase-admin --external:resend --external:stripe --external:cors --external:dotenv",
     "start": "node dist/index.js",
     "deploy": "gcloud run deploy stratemark-backend --source . --region us-central1 --allow-unauthenticated",
