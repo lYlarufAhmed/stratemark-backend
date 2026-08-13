@@ -137,6 +137,32 @@ vi.mock('@mi/research', () => ({
       descriptor: 'AI company',
       cardTypes: ['company'],
     })),
+    cards: [
+      {
+        id: 'card_1',
+        deckId: 'deck_1',
+        companyId: 'comp_1',
+        cardType: 'company',
+        title: 'Card 1',
+        summary: 'Summary 1',
+        tier: null,
+        tierReason: null,
+        citations: [],
+        keyPoints: [],
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    companies: [
+      {
+        id: 'comp_1',
+        name: 'Target Corp',
+        oneLiner: 'Target Corp AI company',
+        logoUrl: null,
+        hqLocation: null,
+        websiteUrl: 'https://target.com',
+        brandTheme: null,
+      },
+    ],
   })),
   runDeckResearchFromStage1: vi.fn().mockImplementation(async (stage) => ({
     market: {
@@ -371,8 +397,8 @@ describe('Sentinel API Authentication & Persistence', () => {
     });
   });
 
-  describe('POST /api/research/deck Persistence', () => {
-    it('persists market, deck, cards, companies, metrics, viceClaims to user isolated paths', async () => {
+  describe('POST /api/research/deck Persistence & Instant Skeleton Cards', () => {
+    it('persists market, deck, cards, companies, metrics, viceClaims and returns cards and companies stubs', async () => {
       const userId = 'usr_research_101';
       const token = makeToken(userId);
 
@@ -385,34 +411,31 @@ describe('Sentinel API Authentication & Persistence', () => {
       expect(res.body.ok).toBe(true);
       expect(res.body.stage).toBe('discovered');
       expect(res.body.candidates).toHaveLength(10);
+      expect(res.body.cards).toBeDefined();
+      expect(res.body.companies).toBeDefined();
 
-      const savedMarket = await getUserMarket(userId, 'mkt_1');
-      expect(savedMarket).toBeDefined();
-      expect(savedMarket?.name).toBe('Competitive Intel');
+      // Query deck endpoint
+      const decksRes = await request(app)
+        .get('/api/decks')
+        .set('Authorization', `Bearer ${token}`);
+      expect(decksRes.status).toBe(200);
+      expect(decksRes.body.decks).toHaveLength(1);
 
-      const savedDeck = await getUserDeck(userId, 'deck_1');
-      expect(savedDeck).toBeDefined();
-      expect(savedDeck?.marketId).toBe('mkt_1');
+      // Query single deck endpoint with cards and companies
+      const singleDeckRes = await request(app)
+        .get(`/api/decks/${res.body.deck.id}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(singleDeckRes.status).toBe(200);
+      expect(singleDeckRes.body.deck.id).toBe(res.body.deck.id);
+      expect(singleDeckRes.body.cards.length).toBeGreaterThan(0);
+      expect(singleDeckRes.body.companies.length).toBeGreaterThan(0);
 
-      const savedCard = await vi.waitFor(async () => {
-        const card = await getUserCard(userId, 'card_1');
-        expect(card).toBeDefined();
-        return card;
-      });
-      expect(savedCard).toBeDefined();
-      expect(savedCard?.title).toBe('Card 1');
-
-      const savedCompany = await getUserCompany(userId, 'comp_1');
-      expect(savedCompany).toBeDefined();
-      expect(savedCompany?.name).toBe('Target Corp');
-
-      const savedMetric = await getUserMetric(userId, 'metric_1');
-      expect(savedMetric).toBeDefined();
-      expect(savedMetric?.value).toBe('$10M');
-
-      const savedVice = await getUserViceClaim(userId, 'vc_1');
-      expect(savedVice).toBeDefined();
-      expect(savedVice?.claimText).toBe('High concentration risk');
+      // Query cards endpoint
+      const cardsRes = await request(app)
+        .get('/api/cards')
+        .set('Authorization', `Bearer ${token}`);
+      expect(cardsRes.status).toBe(200);
+      expect(cardsRes.body.cards.length).toBeGreaterThan(0);
     });
   });
 

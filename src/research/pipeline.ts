@@ -1143,6 +1143,61 @@ export interface Stage1DeckResearch {
   deck: Deck;
   candidates: CompanyCandidate[];
   rejected: string[];
+  cards: Card[];
+  companies: Company[];
+}
+
+export function buildCandidateSkeletons(
+  deckId: string,
+  candidates: CompanyCandidate[],
+): { cards: Card[]; companies: Company[] } {
+  const cards: Card[] = [];
+  const companies: Company[] = [];
+  const seenCompanies = new Set<string>();
+
+  for (const candidate of candidates) {
+    const compSlug = slugify(candidate.name);
+    const companyId = uid('cmp', compSlug);
+    const domain = candidate.domain ? rootDomain(candidate.domain) : null;
+
+    if (!seenCompanies.has(companyId)) {
+      seenCompanies.add(companyId);
+      companies.push({
+        id: companyId,
+        name: candidate.name,
+        oneLiner: candidate.descriptor || `${candidate.name} operates in this market.`,
+        logoUrl: domain ? `https://icon.horse/icon/${domain}` : null,
+        hqLocation: null,
+        websiteUrl: domain ? `https://${domain}` : null,
+        brandTheme: {
+          primary: '#18181b',
+          secondary: '#71717a',
+          accent: '#3f3f46',
+          text: '#f4f4f5',
+          background: '#09090b',
+          fontFamily: null,
+          source: 'default',
+        },
+      });
+    }
+
+    const primaryType = candidate.cardTypes[0] ?? candidate.primaryRole ?? 'company';
+    cards.push({
+      id: uid('crd', `${deckId.slice(0, 12)}_${compSlug}`),
+      deckId,
+      companyId,
+      cardType: primaryType,
+      title: candidate.name,
+      summary: candidate.descriptor || `${candidate.name} is a key player in this market.`,
+      tier: null,
+      tierReason: null,
+      citations: [],
+      keyPoints: [],
+      createdAt: now(),
+    });
+  }
+
+  return { cards, companies };
 }
 
 export async function prepareDeckResearch(
@@ -1175,6 +1230,7 @@ export async function prepareDeckResearch(
     createdAt: now(),
     lastRefreshedAt: now(),
   };
+  const { cards, companies } = buildCandidateSkeletons(deck.id, discovery.candidates);
 
   return {
     plan,
@@ -1182,6 +1238,8 @@ export async function prepareDeckResearch(
     deck,
     candidates: discovery.candidates,
     rejected: discovery.rejected,
+    cards,
+    companies,
   };
 }
 

@@ -21,6 +21,14 @@ import {
   getUser,
   createUser,
   getAlertsForUser,
+  getUserDecks,
+  getUserDeck,
+  getUserCards,
+  getUserCompanies,
+  getUserMetrics,
+  getUserViceClaims,
+  getUserMarkets,
+  getUserMarket,
   setUserMarket,
   setUserDeck,
   setUserCard,
@@ -328,7 +336,13 @@ app.post('/api/research/deck', authenticateToken, async (req: AuthRequest, res) 
     };
 
     const stage = await prepareDeckResearch({ prompt, region }, client, options);
-    await Promise.all([setUserMarket(userId, stage.market), setUserDeck(userId, stage.deck)]);
+    await Promise.all([
+      setUserMarket(userId, stage.market),
+      setUserDeck(userId, stage.deck),
+      ...stage.cards.map((card) => setUserCard(userId, card)),
+      ...stage.companies.map((company) => setUserCompany(userId, company)),
+    ]);
+
     res.status(202).json({
       ok: true,
       stage: 'discovered',
@@ -336,6 +350,8 @@ app.post('/api/research/deck', authenticateToken, async (req: AuthRequest, res) 
       market: stage.market,
       deck: stage.deck,
       candidates: stage.candidates,
+      cards: stage.cards,
+      companies: stage.companies,
     });
 
     void runDeckResearchFromStage1(stage, client, options)
@@ -353,6 +369,52 @@ app.post('/api/research/deck', authenticateToken, async (req: AuthRequest, res) 
       details: err instanceof Error ? err.message : String(err),
     });
   }
+});
+
+// ── Deck & Card Query Endpoints ──────────────────────────────────────────────
+app.get('/api/decks', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const decks = await getUserDecks(userId);
+  res.json({ decks });
+});
+
+app.get('/api/decks/:deckId', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const { deckId } = req.params;
+  const deck = await getUserDeck(userId, deckId);
+  if (!deck) return res.status(404).json({ error: 'deck not found' });
+
+  const [market, allCards, allCompanies, allMetrics, allViceClaims] = await Promise.all([
+    getUserMarket(userId, deck.marketId),
+    getUserCards(userId),
+    getUserCompanies(userId),
+    getUserMetrics(userId),
+    getUserViceClaims(userId),
+  ]);
+
+  const cards = allCards.filter((c) => c.deckId === deckId);
+  const companyIds = new Set(cards.map((c) => c.companyId).filter((id): id is string => Boolean(id)));
+  const companies = allCompanies.filter((c) => companyIds.has(c.id));
+  const metrics = allMetrics.filter((m) => companyIds.has(m.companyId));
+  const cardIds = new Set(cards.map((c) => c.id));
+  const viceClaims = allViceClaims.filter((vc) => cardIds.has(vc.cardId));
+
+  res.json({
+    deck,
+    market,
+    cards,
+    companies,
+    metrics,
+    viceClaims,
+  });
+});
+
+app.get('/api/cards', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const { deckId } = req.query;
+  const allCards = await getUserCards(userId);
+  const cards = deckId ? allCards.filter((c) => c.deckId === String(deckId)) : allCards;
+  res.json({ cards });
 });
 
 // ── Stripe Webhook ──────────────────────────────────────────────────────────
