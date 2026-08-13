@@ -29,6 +29,7 @@ import {
   getUserMarket,
   setUserMarket,
   setUserDeck,
+  deleteUserDeck,
   setUserCard,
   setUserCompany,
   setUserMetric,
@@ -383,8 +384,22 @@ app.post('/api/research/deck', authenticateToken, async (req: AuthRequest, res) 
 // ── Deck & Card Query Endpoints ──────────────────────────────────────────────
 app.get('/api/decks', authenticateToken, async (req: AuthRequest, res) => {
   const userId = req.userId!;
-  const decks = await getUserDecks(userId);
-  res.json({ decks });
+  const [decks, markets] = await Promise.all([
+    getUserDecks(userId),
+    getUserMarkets(userId),
+  ]);
+  const marketMap = new Map(markets.map((m) => [m.id, m]));
+  const decksWithNames = decks.map((deck) => {
+    const market = marketMap.get(deck.marketId);
+    const name = market?.name ?? 'Market Deck';
+    return {
+      ...deck,
+      name,
+      marketName: name,
+      market: market ?? null,
+    };
+  });
+  res.json({ decks: decksWithNames, markets });
 });
 
 app.get('/api/decks/:deckId', authenticateToken, async (req: AuthRequest, res) => {
@@ -412,14 +427,30 @@ app.get('/api/decks/:deckId', authenticateToken, async (req: AuthRequest, res) =
   const cardIds = new Set(cards.map((c) => c.id));
   const viceClaims = allViceClaims.filter((vc) => cardIds.has(vc.cardId));
 
+  const name = market?.name ?? 'Market Deck';
+
   res.json({
-    deck,
+    deck: {
+      ...deck,
+      name,
+      marketName: name,
+    },
     market,
     cards,
     companies,
     metrics,
     viceClaims,
   });
+});
+
+app.delete('/api/decks/:deckId', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const { deckId } = req.params;
+  const deleted = await deleteUserDeck(userId, deckId);
+  if (!deleted) {
+    return res.status(404).json({ error: 'deck not found' });
+  }
+  res.json({ success: true, message: 'Deck deleted successfully', deckId });
 });
 
 app.get('/api/cards', authenticateToken, async (req: AuthRequest, res) => {

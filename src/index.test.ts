@@ -420,6 +420,7 @@ describe('Sentinel API Authentication & Persistence', () => {
         .set('Authorization', `Bearer ${token}`);
       expect(decksRes.status).toBe(200);
       expect(decksRes.body.decks).toHaveLength(1);
+      expect(decksRes.body.decks[0].name).toBe('Competitive Intel');
 
       // Query single deck endpoint with cards and companies
       const singleDeckRes = await request(app)
@@ -427,6 +428,7 @@ describe('Sentinel API Authentication & Persistence', () => {
         .set('Authorization', `Bearer ${token}`);
       expect(singleDeckRes.status).toBe(200);
       expect(singleDeckRes.body.deck.id).toBe(res.body.deck.id);
+      expect(singleDeckRes.body.deck.name).toBe('Competitive Intel');
       expect(singleDeckRes.body.cards.length).toBeGreaterThan(0);
       expect(singleDeckRes.body.companies.length).toBeGreaterThan(0);
 
@@ -436,6 +438,19 @@ describe('Sentinel API Authentication & Persistence', () => {
         .set('Authorization', `Bearer ${token}`);
       expect(cardsRes.status).toBe(200);
       expect(cardsRes.body.cards.length).toBeGreaterThan(0);
+
+      // Delete deck endpoint
+      const deleteRes = await request(app)
+        .delete(`/api/decks/${res.body.deck.id}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(deleteRes.status).toBe(200);
+      expect(deleteRes.body.success).toBe(true);
+
+      // Verify deck is deleted
+      const deletedCheckRes = await request(app)
+        .get(`/api/decks/${res.body.deck.id}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(deletedCheckRes.status).toBe(404);
     });
   });
 

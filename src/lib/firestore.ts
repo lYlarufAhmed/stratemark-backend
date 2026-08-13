@@ -115,6 +115,63 @@ export async function setUserDeck(userId: string, deck: Deck): Promise<void> {
   await writeUserScopedDoc(userId, USER_SCOPED_COLLECTIONS.DECKS, deck.id, deck);
 }
 
+export async function deleteUserDeck(userId: string, deckId: string): Promise<boolean> {
+  let deck = await getUserDeck(userId, deckId);
+  if (!deck) {
+    const allDecks = await getUserDecks(userId);
+    deck = allDecks.find((d) => d.id === deckId || d.marketId === deckId) ?? null;
+  }
+  if (!deck) return false;
+
+  const targetDeckId = deck.id;
+  const targetMarketId = deck.marketId;
+
+  const allCards = await getUserCards(userId);
+  const deckCards = allCards.filter((c) => c.deckId === targetDeckId);
+  const cardIds = new Set(deckCards.map((c) => c.id));
+  const companyIdsInDeck = new Set(
+    deckCards.map((c) => c.companyId).filter((id): id is string => Boolean(id)),
+  );
+
+  for (const card of deckCards) {
+    await deleteUserScopedDoc(userId, USER_SCOPED_COLLECTIONS.CARDS, card.id);
+  }
+
+  const allViceClaims = await getUserViceClaims(userId);
+  const claimsToDelete = allViceClaims.filter((vc) => cardIds.has(vc.cardId));
+  for (const claim of claimsToDelete) {
+    await deleteUserScopedDoc(userId, USER_SCOPED_COLLECTIONS.VICE_CLAIMS, claim.id);
+  }
+
+  const remainingCards = allCards.filter((c) => c.deckId !== targetDeckId);
+  const remainingCompanyIds = new Set(
+    remainingCards.map((c) => c.companyId).filter((id): id is string => Boolean(id)),
+  );
+
+  for (const companyId of companyIdsInDeck) {
+    if (!remainingCompanyIds.has(companyId)) {
+      await deleteUserScopedDoc(userId, USER_SCOPED_COLLECTIONS.COMPANIES, companyId);
+      const allMetrics = await getUserMetrics(userId);
+      const companyMetrics = allMetrics.filter((m) => m.companyId === companyId);
+      for (const metric of companyMetrics) {
+        await deleteUserScopedDoc(userId, USER_SCOPED_COLLECTIONS.METRICS, metric.id);
+      }
+    }
+  }
+
+  await deleteUserScopedDoc(userId, USER_SCOPED_COLLECTIONS.DECKS, targetDeckId);
+
+  const allDecks = await getUserDecks(userId);
+  const remainingDecksWithMarket = allDecks.filter(
+    (d) => d.id !== targetDeckId && d.marketId === targetMarketId,
+  );
+  if (remainingDecksWithMarket.length === 0) {
+    await deleteUserScopedDoc(userId, USER_SCOPED_COLLECTIONS.MARKETS, targetMarketId);
+  }
+
+  return true;
+}
+
 // Cards
 export async function getUserCards(userId: string): Promise<Card[]> {
   return listUserScopedDocs<Card>(userId, USER_SCOPED_COLLECTIONS.CARDS);
