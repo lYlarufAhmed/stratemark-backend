@@ -14,8 +14,59 @@ set +a
 
 : "${GEMINI_API_KEY:?GEMINI_API_KEY is missing from .env}"
 
-exec gcloud beta code dev \
+# --secrets only accepts Secret Manager references (NAME:VERSION), not literal
+# .env values. Supply ordinary local variables through a temporary service YAML.
+service_config=".stratemark.local.service.dev.yaml"
+cleanup() {
+  rm -f "$service_config"
+}
+trap cleanup EXIT
+
+yaml_quote() {
+  local value=${1-}
+  value=${value//\'/\'\'}
+  printf "'%s'" "$value"
+}
+
+cat > "$service_config" <<EOF
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: stratemark-backend-local
+spec:
+  template:
+    spec:
+      containers:
+      - env:
+        - name: GCP_PROJECT_ID
+          value: $(yaml_quote "${GCP_PROJECT_ID:-geminixprize-504607}")
+        - name: GCP_LOCATION
+          value: $(yaml_quote "${GCP_LOCATION:-us-central1}")
+        - name: GEMINI_API_KEY
+          value: $(yaml_quote "$GEMINI_API_KEY")
+        - name: GEMINI_MODEL
+          value: $(yaml_quote "${GEMINI_MODEL:-gemini-flash-latest}")
+        - name: RESEND_API_KEY
+          value: $(yaml_quote "${RESEND_API_KEY:-}")
+        - name: RESEND_FROM_EMAIL
+          value: $(yaml_quote "${RESEND_FROM_EMAIL:-alerts@stratemark.io}")
+        - name: STRIPE_SECRET_KEY
+          value: $(yaml_quote "${STRIPE_SECRET_KEY:-}")
+        - name: STRIPE_WEBHOOK_SECRET
+          value: $(yaml_quote "${STRIPE_WEBHOOK_SECRET:-}")
+        - name: APP_URL
+          value: $(yaml_quote "${APP_URL:-http://localhost:8080}")
+        - name: SCRAPE_INTERVAL_HOURS
+          value: $(yaml_quote "${SCRAPE_INTERVAL_HOURS:-6}")
+        - name: PORT
+          value: '8080'
+EOF
+
+gcloud beta code dev \
   --dockerfile=Dockerfile \
   --local-port="${LOCAL_PORT:-8080}" \
   --application-default-credential \
-  --secrets="GCP_PROJECT_ID=${GCP_PROJECT_ID:-geminixprize-504607},GCP_LOCATION=${GCP_LOCATION:-us-central1},GEMINI_API_KEY=${GEMINI_API_KEY},GEMINI_MODEL=${GEMINI_MODEL:-gemini-flash-latest},RESEND_API_KEY=${RESEND_API_KEY:-},RESEND_FROM_EMAIL=${RESEND_FROM_EMAIL:-alerts@stratemark.io},STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-},STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-},APP_URL=${APP_URL:-http://localhost:8080},SCRAPE_INTERVAL_HOURS=${SCRAPE_INTERVAL_HOURS:-6},PORT=8080"
+  "$service_config"
+status=$?
+cleanup
+exit "$status"
