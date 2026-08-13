@@ -127,29 +127,22 @@ export function createRateLimiter(requestsPerMinute: number): RateLimiter {
   const windowMs = 60_000;
   const limit = Math.max(1, requestsPerMinute);
   const sent: number[] = [];
-  // Serialize waiters so N callers don't all wake and burst through together.
-  let chain: Promise<void> = Promise.resolve();
-
-  async function reserve(signal?: AbortSignal): Promise<void> {
-    for (;;) {
-      throwIfAborted(signal);
-      const now = Date.now();
-      while (sent.length && now - sent[0]! >= windowMs) sent.shift();
-      if (sent.length < limit) {
-        sent.push(now);
-        return;
-      }
-      // Wait until the oldest call leaves the window (+ a little slack).
-      await sleep(windowMs - (now - sent[0]!) + 60, signal);
-    }
-  }
 
   return {
-    acquire(signal) {
-      const next = chain.then(() => reserve(signal));
-      // Keep the chain alive even if one waiter aborts.
-      chain = next.catch(() => undefined);
-      return next;
+    async acquire(signal?: AbortSignal): Promise<void> {
+      for (;;) {
+        throwIfAborted(signal);
+        const now = Date.now();
+        while (sent.length > 0 && now - sent[0]! >= windowMs) {
+          sent.shift();
+        }
+        if (sent.length < limit) {
+          sent.push(now);
+          return;
+        }
+        const waitTime = windowMs - (now - sent[0]!) + 50;
+        await sleep(Math.max(100, waitTime), signal);
+      }
     },
   };
 }

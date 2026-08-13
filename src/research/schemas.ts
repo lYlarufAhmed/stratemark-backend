@@ -25,17 +25,37 @@ export const marketPlanOutSchema = z.object({
   searchThemes: z.array(z.string()).default([]),
 });
 
-// Tolerant of the model returning either { companies: [...] } or a bare [...].
-const discoveryCompanySchema = z.object({
-  name: z.string().min(1),
-  domain: z.string().nullable().default(null),
-  descriptor: z.string().default(''),
-  primaryRole: z.enum(['company', 'infrastructure', 'distribution']).nullable().default(null),
-  cardTypes: z.array(cardTypeSchema).default(['company']),
-});
+const discoveryCompanySchema = z.preprocess(
+  (val: any) => {
+    if (typeof val === 'object' && val !== null) {
+      const rawName = val.name ?? val.company ?? val.companyName ?? val.title ?? val.organization;
+      if (typeof rawName === 'string' && rawName.trim().length > 0) {
+        return { ...val, name: rawName.trim() };
+      }
+    }
+    return val;
+  },
+  z.object({
+    name: z.string().min(1),
+    domain: z.string().nullable().default(null),
+    descriptor: z.string().default(''),
+    primaryRole: z.enum(['company', 'infrastructure', 'distribution']).nullable().default(null),
+    cardTypes: z.array(cardTypeSchema).default(['company']),
+  }),
+);
 
 export const discoveryOutSchema = z.preprocess(
-  (v) => (Array.isArray(v) ? { companies: v } : v),
+  (v) => {
+    const obj = Array.isArray(v) ? { companies: v } : (v as any);
+    if (obj && Array.isArray(obj.companies)) {
+      obj.companies = obj.companies.filter((c: any) => {
+        if (!c || typeof c !== 'object') return false;
+        const n = c.name ?? c.company ?? c.companyName ?? c.title ?? c.organization;
+        return typeof n === 'string' && n.trim().length > 0;
+      });
+    }
+    return obj;
+  },
   z.object({
     companies: z.array(discoveryCompanySchema).max(40).default([]),
   }),

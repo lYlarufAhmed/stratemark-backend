@@ -506,6 +506,7 @@ async function enrichOne(
   candidate: CompanyCandidate,
   plan: MarketPlan,
   signal?: AbortSignal,
+  skeletonCompanies?: Company[],
 ): Promise<EnrichedCompany> {
   const grounded = await client.ground(enrichPrompt(candidate, plan), {
     system: GROUNDED_SYSTEM,
@@ -517,7 +518,12 @@ async function enrichOne(
     { system: STRUCTURE_SYSTEM, signal },
   );
   const slug = slugify(candidate.name);
-  const companyId = uid('cmp', slug);
+  const matchedSkeleton = skeletonCompanies?.find(
+    (sc) =>
+      slugify(sc.name) === slug ||
+      (candidate.domain && sc.websiteUrl && sc.websiteUrl.includes(candidate.domain)),
+  );
+  const companyId = matchedSkeleton?.id ?? uid('cmp', slug);
   const website = enrich.website ?? (candidate.domain ? `https://${candidate.domain}` : null);
   const domain = rootDomain(website) ?? candidate.domain;
   const company: Company = {
@@ -819,6 +825,71 @@ export async function expandDeckResearch(args: {
   return cards;
 }
 
+function buildCardsForEnriched(
+  e: EnrichedCompany,
+  deckId: string,
+  tier: MaturityTier | null,
+  tierReason: string | null,
+  options?: RunResearchOptions,
+): CardWithCompany[] {
+  const sourcedViceClaims: ViceClaim[] = e.enrich.viceClaims
+    .map((vc, i) => {
+      const cite = vc.sourceIndex != null ? e.citations[vc.sourceIndex] : undefined;
+      if (!cite?.url) return null;
+      return {
+        id: uid('vcl', `${e.company.id}-${i}`),
+        cardId: '',
+        claimText: vc.text,
+        sourceUrl: cite.url,
+        sourceTitle: cite.title || null,
+        capturedAt: now(),
+      };
+    })
+    .filter((x): x is ViceClaim => x !== null);
+
+  const cultureNote = (e.enrich.cultureNote ?? '').trim();
+  const primaryEntity = primaryEntityType(
+    e.candidate.cardTypes,
+    e.candidate.name,
+    e.candidate.descriptor,
+    e.candidate.primaryRole,
+  );
+  const emitted: CardType[] = [primaryEntity];
+  if (e.candidate.cardTypes.includes('vice') && sourcedViceClaims.length > 0)
+    emitted.push('vice');
+  if (e.candidate.cardTypes.includes('culture') && cultureNote.length > 0)
+    emitted.push('culture');
+
+  const cwcs: CardWithCompany[] = [];
+  for (const cardType of emitted) {
+    const viceClaims: ViceClaim[] = cardType === 'vice' ? sourcedViceClaims : [];
+    const matchedSkeletonCard = options?.resume?.skeletonCards?.find(
+      (sc) => sc.companyId === e.company.id && sc.cardType === cardType,
+    );
+    const card: Card = {
+      id: matchedSkeletonCard?.id ?? uid('crd', `${slugify(e.company.name)}-${cardType}`),
+      deckId,
+      companyId: e.company.id,
+      cardType,
+      title: null,
+      summary: cardType === 'culture' ? cultureNote : null,
+      tier: cardType === primaryEntity ? tier : null,
+      tierReason: cardType === primaryEntity ? tierReason : null,
+      citations: [],
+      keyPoints: [],
+      createdAt: now(),
+    };
+    const stampedClaims = viceClaims.map((v) => ({ ...v, cardId: card.id }));
+    cwcs.push({
+      card,
+      company: e.company,
+      metrics: isEntityCardType(cardType) ? e.metrics : [],
+      viceClaims: stampedClaims,
+    });
+  }
+  return cwcs;
+}
+
 /** Run the full deck-research pipeline. Streams progress via `onEvent`. */
 export async function runDeckResearch(
   brief: { prompt: string; region: string | null },
@@ -951,7 +1022,13 @@ export async function runDeckResearch(
       async (candidate) => {
         throwIfAborted(signal);
         try {
-          const result = await enrichOne(client, candidate, plan, signal);
+          const result = await enrichOne(
+            client,
+            candidate,
+            plan,
+            signal,
+            options.resume?.skeletonCompanies,
+          );
           done += 1;
           emit({
             type: 'status',
@@ -959,6 +1036,19 @@ export async function runDeckResearch(
             message: `Researched ${candidate.name} (${done}/${candidates.length})`,
             progress: done / candidates.length,
           });
+
+          const base = computeCms(buildCmsInput(result.metrics), { deckUserValues: [] });
+          const initialCwcs = buildCardsForEnriched(
+            result,
+            deck.id,
+            base.finalTier,
+            'Based on market metrics',
+            options,
+          );
+          for (const cwc of initialCwcs) {
+            emit({ type: 'card', card: cwc });
+          }
+
           return result;
         } catch (error) {
           if (signal?.aborted) throw error;
@@ -1036,78 +1126,8 @@ export async function runDeckResearch(
       tier = scored.finalTier;
       tierReason = review.reason;
     }
-    // Every sourced controversy this company actually has. Computed once, because
-    // it decides whether a Vice card is worth minting at all.
-    const sourcedViceClaims: ViceClaim[] = e.enrich.viceClaims
-      .map((vc, i) => {
-        const cite = vc.sourceIndex != null ? e.citations[vc.sourceIndex] : undefined;
-        if (!cite?.url) return null; // grounding discipline: drop unsourced vice claims
-        return {
-          id: uid('vcl', `${e.company.id}-${i}`),
-          cardId: '',
-          claimText: vc.text,
-          sourceUrl: cite.url,
-          sourceTitle: cite.title || null,
-          capturedAt: now(),
-        };
-      })
-      .filter((x): x is ViceClaim => x !== null);
-    const cultureNote = (e.enrich.cultureNote ?? '').trim();
-
-    // ONE entity card per company, plus a signal card only where a signal exists.
-    //
-    // Discovery legitimately reports several roles for one business — OpenAI sells
-    // models, rents inference, and distributes through a hyperscaler. But minting
-    // a card per role printed the SAME four figures three times under three
-    // headings, which is the duplication the entity rule was written to stop, and
-    // it padded a 17-card deck to 47. The deck is "one card per company"; the
-    // company's other roles are a property of that card, not extra cards.
-    //
-    // Signal facets are then emitted only when they carry content. A Vice card
-    // with no sourced claim, or a Culture card with no note, is an empty promise —
-    // measured on a live run: 10 of 10 companies were tagged culture or vice, and
-    // every one of those cards came back with nothing in it.
-    // Discovery is asked for exactly one role, so this is a tiebreak. Prefer the
-    // more specific supplier roles: "company" is the label a model reaches for by
-    // default, and letting it win would leave the Infrastructure and Distribution
-    // views permanently empty.
-    const primaryEntity = primaryEntityType(
-      e.candidate.cardTypes,
-      e.candidate.name,
-      e.candidate.descriptor,
-      e.candidate.primaryRole,
-    );
-    const emitted: CardType[] = [primaryEntity];
-    if (e.candidate.cardTypes.includes('vice') && sourcedViceClaims.length > 0)
-      emitted.push('vice');
-    if (e.candidate.cardTypes.includes('culture') && cultureNote.length > 0)
-      emitted.push('culture');
-
-    for (const cardType of emitted) {
-      const viceClaims: ViceClaim[] = cardType === 'vice' ? sourcedViceClaims : [];
-      const card: Card = {
-        id: uid('crd', `${slugify(e.company.name)}-${cardType}`),
-        deckId: deck.id,
-        companyId: e.company.id,
-        cardType,
-        title: null,
-        summary: cardType === 'culture' ? cultureNote : null,
-        tier: cardType === primaryEntity ? tier : null,
-        tierReason: cardType === primaryEntity ? tierReason : null,
-        citations: [],
-        keyPoints: [],
-        createdAt: now(),
-      };
-      const stampedClaims = viceClaims.map((v) => ({ ...v, cardId: card.id }));
-      const cwc: CardWithCompany = {
-        card,
-        company: e.company,
-        // Only a card that IS the business carries the business's figures. A
-        // signal card states a sourced claim; lending it a valuation would show
-        // the same number twice under two different provenance stories.
-        metrics: isEntityCardType(cardType) ? e.metrics : [],
-        viceClaims: stampedClaims,
-      };
+    const finalCwcs = buildCardsForEnriched(e, deck.id, tier, tierReason, options);
+    for (const cwc of finalCwcs) {
       cards.push(cwc);
       emit({ type: 'card', card: cwc });
     }
@@ -1259,6 +1279,8 @@ export async function runDeckResearchFromStage1(
         deck: stage.deck,
         candidates: stage.candidates,
         completedCards: [],
+        skeletonCards: stage.cards,
+        skeletonCompanies: stage.companies,
       },
     },
   );

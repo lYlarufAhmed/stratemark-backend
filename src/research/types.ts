@@ -5,8 +5,10 @@
  */
 import type { ZodType, ZodTypeDef } from 'zod';
 import type {
+  Card,
   CardType,
   CardWithCompany,
+  Company,
   DashboardTab,
   Deck,
   Market,
@@ -37,6 +39,8 @@ export interface ResearchResumeState {
   deck: Deck;
   candidates: CompanyCandidate[];
   completedCards: CardWithCompany[];
+  skeletonCards?: Card[];
+  skeletonCompanies?: Company[];
 }
 
 /** A grounded source (from Gemini's Google-Search grounding metadata). */

@@ -8,6 +8,7 @@ import {
   type Market,
   type Deck,
   type Card,
+  type CardWithCompany,
   type Company,
   type CompanyMetric,
   type ViceClaim,
@@ -167,6 +168,19 @@ export async function getUserViceClaim(
 
 export async function setUserViceClaim(userId: string, viceClaim: ViceClaim): Promise<void> {
   await writeUserScopedDoc(userId, USER_SCOPED_COLLECTIONS.VICE_CLAIMS, viceClaim.id, viceClaim);
+}
+
+export async function persistCardWithCompany(userId: string, cwc: CardWithCompany): Promise<void> {
+  await setUserCard(userId, cwc.card);
+  if (cwc.company) {
+    await setUserCompany(userId, cwc.company);
+  }
+  for (const metric of cwc.metrics) {
+    await setUserMetric(userId, metric);
+  }
+  for (const viceClaim of cwc.viceClaims) {
+    await setUserViceClaim(userId, viceClaim);
+  }
 }
 
 // ── User Management & Sentinel Alerts ──────────────────────────────────────

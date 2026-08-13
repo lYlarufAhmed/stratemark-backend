@@ -33,6 +33,7 @@ import {
   setUserCompany,
   setUserMetric,
   setUserViceClaim,
+  persistCardWithCompany,
   createCompany,
   importUserBrainSnapshot,
 } from './lib/firestore.js';
@@ -352,7 +353,17 @@ app.post('/api/research/deck', authenticateToken, async (req: AuthRequest, res) 
       companies: stage.companies,
     });
 
-    void runDeckResearchFromStage1(stage, client, options)
+    void runDeckResearchFromStage1(stage, client, {
+      ...options,
+      concurrency: 3,
+      onEvent: (event) => {
+        if (event.type === 'card') {
+          void persistCardWithCompany(userId, event.card).catch((err) => {
+            console.error(`Failed to incrementally persist card ${event.card.card.id}:`, err);
+          });
+        }
+      },
+    })
       .then(async (result) => {
         await persistResearchResult(userId, result);
         await scrapeDiscoveredCompanies(userId, result);
