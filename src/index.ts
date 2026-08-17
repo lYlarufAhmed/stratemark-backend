@@ -1,8 +1,10 @@
 import express from 'express';
 import cors from 'cors';
+import crypto from 'node:crypto';
 import {
   prepareDeckResearch,
   runDeckResearchFromStage1,
+  expandDeckResearch,
   createGeminiClient,
   type ResearchResult,
 } from '@mi/research';
@@ -22,6 +24,7 @@ import {
   getUserDecks,
   getUserDeck,
   getUserCards,
+  getUserCard,
   getUserCompanies,
   getUserMetrics,
   getUserViceClaims,
@@ -476,6 +479,121 @@ app.get('/api/cards', authenticateToken, async (req: AuthRequest, res) => {
   res.json({ cards });
 });
 
+app.get('/api/cards/saved', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const allCards = await getUserCards(userId);
+  const cards = allCards.filter(
+    (c) => (c as Record<string, unknown>).saved === true || (c as Record<string, unknown>).isSaved === true,
+  );
+  res.json({ cards });
+});
+
+app.post('/api/cards/saved', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const { cardId } = req.body ?? {};
+  if (!cardId) return res.status(400).json({ error: 'cardId required' });
+  const card = await getUserCard(userId, String(cardId));
+  if (card) {
+    await setUserCard(userId, { ...card, saved: true } as typeof card);
+  }
+  res.json({ ok: true });
+});
+
+app.delete('/api/cards/saved/:cardId', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const { cardId } = req.params;
+  const card = await getUserCard(userId, String(cardId));
+  if (card) {
+    await setUserCard(userId, { ...card, saved: false } as typeof card);
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/research/chat', authenticateToken, async (req: AuthRequest, res) => {
+  const { threadId, subject, query } = req.body ?? {};
+  if (!query) return res.status(400).json({ error: 'query is required' });
+
+  const apiKey = config.gemini.apiKey;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY environment variable is not configured' });
+  }
+
+  try {
+    const client = createGeminiClient({ apiKey, model: config.gemini.model });
+    const promptText = subject ? `Subject: ${subject}\n\nQuestion: ${query}` : query;
+    const grounded = await client.ground(promptText);
+
+    const refs = (grounded.citations ?? []).map((c) => ({
+      label: c.title || 'Source',
+      url: c.url,
+    }));
+
+    res.json({
+      answer: grounded.text,
+      references: refs,
+      threadId: threadId || `thread-${Date.now()}`,
+    });
+  } catch (err) {
+    console.error('Research chat error:', err);
+    res.status(500).json({
+      error: 'Research chat failed',
+      details: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+app.post('/api/research/expand', authenticateToken, async (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const { deckId, focusArea } = req.body ?? {};
+  if (!deckId) return res.status(400).json({ error: 'deckId is required' });
+
+  const apiKey = config.gemini.apiKey;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY environment variable is not configured' });
+  }
+
+  try {
+    const deck = await getUserDeck(userId, String(deckId));
+    if (!deck) return res.status(404).json({ error: 'deck not found' });
+
+    const market = await getUserMarket(userId, deck.marketId);
+    const existingCards = await getUserCards(userId);
+    const deckCards = existingCards.filter((c) => c.deckId === deck.id);
+    const existingCompanies = await getUserCompanies(userId);
+    const excludeNames = existingCompanies.map((c) => c.name);
+
+    const client = createGeminiClient({ apiKey, model: config.gemini.model });
+    const expandedCards = await expandDeckResearch({
+      client,
+      marketName: market?.name ?? 'Market Deck',
+      vertical: market?.scopeDefinition?.vertical ?? 'Industry',
+      geography: market?.scopeDefinition?.geography ?? null,
+      focusPrompt: focusArea ?? 'competitors and adjacent players',
+      excludeNames,
+      deckId: deck.id,
+      deckUserValues: deckCards.map((c) => c.tier ?? 1),
+      target: 3,
+    });
+
+    for (const item of expandedCards) {
+      if (item.company) {
+        await setUserCompany(userId, item.company);
+      }
+      if (item.card) {
+        await setUserCard(userId, item.card);
+      }
+    }
+
+    res.json({ added: expandedCards.length });
+  } catch (err) {
+    console.error('Expand deck error:', err);
+    res.status(500).json({
+      error: 'Expand deck failed',
+      details: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
 // ── Stripe Webhook ──────────────────────────────────────────────────────────
 app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -548,6 +666,91 @@ app.post('/api/webhook/paddle', express.json(), async (req, res) => {
   } catch (err) {
     console.error('Paddle webhook error:', err);
     res.status(500).json({ error: 'Paddle webhook processing failed' });
+  }
+});
+
+// ── Lemon Squeezy Webhook ───────────────────────────────────────────────────
+app.post('/api/webhook/lemonsqueezy', express.raw({ type: 'application/json' }), async (req, res) => {
+  const secret = config.lemonSqueezy.webhookSecret;
+  const signature = req.headers['x-signature'] as string | undefined;
+
+  let rawBody: Buffer;
+  if (Buffer.isBuffer(req.body)) {
+    rawBody = req.body;
+  } else if (typeof req.body === 'string') {
+    rawBody = Buffer.from(req.body, 'utf8');
+  } else {
+    rawBody = Buffer.from(JSON.stringify(req.body ?? {}), 'utf8');
+  }
+
+  if (secret) {
+    if (!signature) {
+      return res.status(400).json({ error: 'missing signature' });
+    }
+    const hmac = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    const digestBuf = Buffer.from(hmac, 'utf8');
+    const sigBuf = Buffer.from(signature, 'utf8');
+    if (digestBuf.length !== sigBuf.length || !crypto.timingSafeEqual(digestBuf, sigBuf)) {
+      return res.status(400).json({ error: 'invalid signature' });
+    }
+  }
+
+  try {
+    const payload = JSON.parse(rawBody.toString('utf8'));
+    const meta = payload.meta ?? {};
+    const eventName = meta.event_name || payload.event_name;
+    const customData = meta.custom_data ?? {};
+    const attributes = payload.data?.attributes ?? {};
+
+    const userId = customData.userId || customData.user_id;
+    const email = attributes.user_email || customData.email;
+    const tier = customData.tier || 'pro';
+    const status = attributes.status;
+    const customerId = attributes.customer_id ? String(attributes.customer_id) : null;
+    const subscriptionId = payload.data?.id ? String(payload.data.id) : null;
+
+    let targetUserId = userId;
+    if (!targetUserId && email) {
+      const snap = await collections.users.where('email', '==', email).get();
+      if (!snap.empty) {
+        targetUserId = snap.docs[0].id;
+      }
+    }
+
+    if (targetUserId) {
+      const isCanceled =
+        eventName === 'subscription_cancelled' ||
+        eventName === 'subscription_expired' ||
+        status === 'cancelled' ||
+        status === 'expired';
+      const isPaid =
+        eventName === 'order_created' ||
+        eventName === 'subscription_created' ||
+        eventName === 'subscription_updated' ||
+        eventName === 'subscription_payment_success' ||
+        status === 'active';
+
+      const updateData: Record<string, any> = {
+        paymentProvider: 'lemonsqueezy',
+        updatedAt: new Date().toISOString(),
+      };
+      if (customerId) updateData.lemonSqueezyCustomerId = customerId;
+      if (subscriptionId) updateData.lemonSqueezySubscriptionId = subscriptionId;
+
+      if (isCanceled) {
+        updateData.subscriptionStatus = 'canceled';
+      } else if (isPaid) {
+        updateData.subscriptionTier = tier;
+        updateData.subscriptionStatus = 'active';
+      }
+
+      await collections.users.doc(targetUserId).set(updateData, { merge: true });
+    }
+
+    res.json({ received: true, eventName, userId: targetUserId });
+  } catch (err) {
+    console.error('Lemon Squeezy webhook error:', err);
+    res.status(500).json({ error: 'Lemon Squeezy webhook processing failed' });
   }
 });
 
